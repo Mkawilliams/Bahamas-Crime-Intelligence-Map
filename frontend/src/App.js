@@ -1,13 +1,9 @@
-import React,  { useEffect, useState } from "react";
+import React, { useEffect, useState, useRef } from "react";
 import "./App.css";
 import MapComponent from "./MapComponent";
 import TableComponent from "./TableComponent";
 import Filters from "./Filters";
 
-// This is the main App component that orchestrates the entire application. 
-// It manages the state for filters, map theme, GeoJSON data, and the currently clicked division. 
-// The App component is responsible for fetching filter options and table data from the backend API, as well as loading the GeoJSON data for the map. 
-// It also derives the crime data for the map from the table data and handles the logic for filtering the table based on user interactions with the map and dropdowns.
 function App() {
   const [years, setYears] = useState([]);
   const [divisions, setDivisions] = useState([]);
@@ -21,93 +17,136 @@ function App() {
   const [clickedDivision, setClickedDivision] = useState(null);
   const [menuOpen, setMenuOpen] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [loadingMessage, setLoadingMessage] = useState("Loading Crime Data...");
 
+  // Tracks whether we've ever received real data from the backend.
+  // Loading screen only shows before this becomes true (i.e. during cold start).
+  const hasReceivedData = useRef(false);
 
   // Load filter options
-useEffect(() => {
-  fetch(`${process.env.REACT_APP_API_URL}/filters`) //https://locahost:8000/filters
-    .then(res => res.json())
-    .then(data => {
-      setYears(data.years || []);
-      setDivisions(data.divisions || []);
-      setOffences(data.offences || []);
-      // Sets sensible defaults
-      setSelectedYears(data.years || []);
-      setSelectedDivisions(data.divisions || []);
-      setSelectedOffences(data.offences || []);
-    });
-}, []);
+  useEffect(() => {
+    fetch(`${process.env.REACT_APP_API_URL}/filters`)
+      .then(res => res.json())
+      .then(data => {
+        setYears(data.years || []);
+        setDivisions(data.divisions || []);
+        setOffences(data.offences || []);
+        setSelectedYears(data.years || []);
+        setSelectedDivisions(data.divisions || []);
+        setSelectedOffences(data.offences || []);
+      });
+  }, []);
 
-// Load GeoJSON separately (only once)
-useEffect(() => {
-  fetch("/geo/police_subdivisions.geojson")
-    .then(res => res.json())
-    .then(data => setGeojson(data));
-}, []);
+  // Load GeoJSON separately (only once)
+  useEffect(() => {
+    fetch("/geo/police_subdivisions.geojson")
+      .then(res => res.json())
+      .then(data => setGeojson(data));
+  }, []);
 
-// Load map + table when filters change
-useEffect(() => {
-  if (selectedYears.length && selectedDivisions.length && selectedOffences.length) {
-    setLoading(true);
+  // Load table data when filters change.
+  // Only triggers the loading screen if no data has been received yet (cold start).
+  // tableData intentionally excluded from deps to avoid infinite re-fetch loop.
+  useEffect(() => {
+    if (!selectedYears.length || !selectedDivisions.length || !selectedOffences.length) return;
+
+    // Only show loading screen if the backend hasn't responded yet
+    if (!hasReceivedData.current) {
+      setLoading(true);
+      setLoadingMessage("Loading Crime Data...");
+    }
+
     const yearParams = selectedYears.map(y => `years=${y}`).join("&");
     const divisionParams = selectedDivisions.map(d => `divisions=${encodeURIComponent(d)}`).join("&");
     const offenceParams = selectedOffences.map(o => `offences=${encodeURIComponent(o)}`).join("&");
 
-    fetch(`${process.env.REACT_APP_API_URL}/table-data?${yearParams}&${divisionParams}&${offenceParams}`) //https://locahost:8000/table-data?${yearParams}&${divisionParams}&${offenceParams}
-      .then(res => res.json())
-      .then(data => {
-        setTableData(data);
-        setLoading(false);
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 60000);
+
+    fetch(
+      `${process.env.REACT_APP_API_URL}/table-data?${yearParams}&${divisionParams}&${offenceParams}`,
+      { signal: controller.signal }
+    )
+      .then(res => {
+        clearTimeout(timeout);
+        if (!res.ok) throw new Error("Backend not ready");
+        return res.json();
       })
-      .catch(() => setLoading(false));
-  }
-}, [selectedYears, selectedDivisions, selectedOffences]);
+      .then(data => {
+        if (data && Array.isArray(data) && data.length > 0) {
+          hasReceivedData.current = true; // Mark that backend is alive and has responded
+          setTableData(data);
+          setLoading(false);
+        }
+        // If empty response and still waiting, keep loading screen up (cold start)
+      })
+      .catch(() => {
+        clearTimeout(timeout);
+        // Only keep loading screen if we've never gotten data (cold start / wake-up)
+        if (!hasReceivedData.current) {
+          setLoading(true);
+        }
+        console.error("Backend waking up...");
+      });
 
-//Derive crimeData from tableData
-const crimeData = Array.isArray(tableData)
-  ? tableData.reduce((acc, row) => {
-      const divisionName = row.division_name?.trim();
-      acc[divisionName] = (acc[divisionName] || 0) + row.crime_count;
-      return acc;
-    }, {})
-  : {};
+    return () => {
+      clearTimeout(timeout);
+      controller.abort();
+    };
+  }, [selectedYears, selectedDivisions, selectedOffences]); // tableData removed from deps
 
-    // Filter table data based on clicked division
+  // Show "waking up" message if cold start is taking a while
+  useEffect(() => {
+    let wakeMsgTimer;
+    if (loading) {
+      wakeMsgTimer = setTimeout(() => {
+        setLoadingMessage("Server is waking up… this may take up to 60 seconds.");
+      }, 10000);
+    }
+    return () => clearTimeout(wakeMsgTimer);
+  }, [loading]);
+
+  // Force refresh if still on cold start after 60 seconds
+  useEffect(() => {
+    if (loading) {
+      const reloadTimer = setTimeout(() => {
+        window.location.reload();
+      }, 60000);
+      return () => clearTimeout(reloadTimer);
+    }
+  }, [loading]);
+
+  // Derive crimeData from tableData
+  const crimeData = Array.isArray(tableData)
+    ? tableData.reduce((acc, row) => {
+        const divisionName = row.division_name?.trim();
+        acc[divisionName] = (acc[divisionName] || 0) + row.crime_count;
+        return acc;
+      }, {})
+    : {};
+
+  // Filter table rows based on map click and dropdown selections
   const filteredRows = tableData.filter(row => {
-  const matchesClick = clickedDivision 
-    ? row.division_name === clickedDivision 
-    : true;
-
-  const matchesDropdown = selectedDivisions.length
-    ? selectedDivisions.includes(row.division_name)
-    : true;
-
-  return matchesClick && matchesDropdown;
-    });
-
+    const matchesClick = clickedDivision ? row.division_name === clickedDivision : true;
+    const matchesDropdown = selectedDivisions.length ? selectedDivisions.includes(row.division_name) : true;
+    return matchesClick && matchesDropdown;
+  });
 
   return (
-    // Main app container with all components and overlays
     <div className="app-container">
-      {/* Loading overlay */}
-          {loading && (
-            <div className="loading-screen">
-              <div className="loading-spinner"></div>
-              <div className="loading-text">Loading Crime Data...</div>
-            </div>
-          )}
+      {loading && (
+        <div className="loading-screen">
+          <div className="loading-spinner"></div>
+          <div className="loading-text">{loadingMessage}</div>
+        </div>
+      )}
 
-      {/* Disclaimer banner */}
       <div className="disclaimer">
         Disclaimer: This map is for research and educational purposes only. It is not an official government product. Data is sourced from public RBPF reports.
       </div>
 
-      {/* Title overlay */}
-      <div className="title-overlay">
-        Bahamas Crime Intelligence Map
-      </div>
+      <div className="title-overlay">Bahamas Crime Intelligence Map</div>
 
-      {/* Filters overlay */}
       <Filters
         years={years}
         divisions={divisions}
@@ -122,16 +161,11 @@ const crimeData = Array.isArray(tableData)
         setMapTheme={setMapTheme}
       />
 
-      {/* Hamburger menu */}
-      <div className="hamburger" onClick={() => setMenuOpen(true)}>
-        ☰
-      </div>
+      <div className="hamburger" onClick={() => setMenuOpen(true)}>☰</div>
 
       {menuOpen && (
         <div className="menu-overlay">
           <button className="close" onClick={() => setMenuOpen(false)}>×</button>
-
-          {/* Use your Filters component here */}
           <Filters
             years={years}
             divisions={divisions}
@@ -148,31 +182,24 @@ const crimeData = Array.isArray(tableData)
         </div>
       )}
 
-
-
-
-      {/* Map wrapper */}
       <div className="map-wrapper">
-        <MapComponent 
-        geojson={geojson} 
-        mapTheme={mapTheme} 
-        crimeData={crimeData} 
-        onDivisionClick={setClickedDivision} 
-        selectedDivision={clickedDivision} />
+        <MapComponent
+          geojson={geojson}
+          mapTheme={mapTheme}
+          crimeData={crimeData}
+          onDivisionClick={setClickedDivision}
+          selectedDivision={clickedDivision}
+        />
       </div>
 
-     {/* Summary table overlay */}
       <div className="table-wrapper">
         <div className="summary-table">
           <TableComponent rows={filteredRows} />
         </div>
       </div>
 
-      {/* Copyright below table */}
-      <div className="copyright">
-        © 2026 Matthew Williams. All rights reserved.
-      </div>
-      </div>
+      <div className="copyright">© 2026 Matthew Williams. All rights reserved.</div>
+    </div>
   );
 }
 
