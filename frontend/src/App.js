@@ -16,7 +16,7 @@ function App() {
   const [geojson, setGeojson] = useState(null);
   const [clickedDivision, setClickedDivision] = useState(null);
   const [menuOpen, setMenuOpen] = useState(false);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
   const [loadingMessage, setLoadingMessage] = useState("Loading Crime Data...");
 
   // Tracks whether we've ever received real data from the backend.
@@ -24,18 +24,25 @@ function App() {
   const hasReceivedData = useRef(false);
 
   // Load filter options
-  useEffect(() => {
-    fetch(`${process.env.REACT_APP_API_URL}/filters`)
-      .then(res => res.json())
-      .then(data => {
-        setYears(data.years || []);
-        setDivisions(data.divisions || []);
-        setOffences(data.offences || []);
-        setSelectedYears(data.years || []);
-        setSelectedDivisions(data.divisions || []);
-        setSelectedOffences(data.offences || []);
-      });
-  }, []);
+    useEffect(() => {
+      fetch(`${process.env.REACT_APP_API_URL}/filters`)
+        .then(res => {
+          if (!res.ok) throw new Error("Filters fetch failed");
+          return res.json();
+        })
+        .then(data => {
+          setYears(data.years || []);
+          setDivisions(data.divisions || []);
+          setOffences(data.offences || []);
+          setSelectedYears(data.years || []);
+          setSelectedDivisions(data.divisions || []);
+          setSelectedOffences(data.offences || []);
+        })
+        .catch(() => {
+          console.error("Filters endpoint unreachable, backend likely cold starting...");
+          // loading stays true — the 60s reload timer will handle the retry
+        });
+    }, []);
 
   // Load GeoJSON separately (only once)
   useEffect(() => {
