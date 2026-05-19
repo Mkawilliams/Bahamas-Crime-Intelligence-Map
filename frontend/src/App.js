@@ -6,7 +6,6 @@ import Filters from "./Filters";
 
 // This is the main App component that orchestrates the entire application. 
 // It manages the state for filters, map theme, GeoJSON data, and the currently clicked division. 
-
 // The App component is responsible for fetching filter options and table data from the backend API, as well as loading the GeoJSON data for the map. 
 // It also derives the crime data for the map from the table data and handles the logic for filtering the table based on user interactions with the map and dropdowns.
 function App() {
@@ -21,6 +20,8 @@ function App() {
   const [geojson, setGeojson] = useState(null);
   const [clickedDivision, setClickedDivision] = useState(null);
   const [menuOpen, setMenuOpen] = useState(false);
+  const [loading, setLoading] = useState(false);
+
 
   // Load filter options
 useEffect(() => {
@@ -47,13 +48,18 @@ useEffect(() => {
 // Load map + table when filters change
 useEffect(() => {
   if (selectedYears.length && selectedDivisions.length && selectedOffences.length) {
+    setLoading(true);
     const yearParams = selectedYears.map(y => `years=${y}`).join("&");
     const divisionParams = selectedDivisions.map(d => `divisions=${encodeURIComponent(d)}`).join("&");
     const offenceParams = selectedOffences.map(o => `offences=${encodeURIComponent(o)}`).join("&");
 
     fetch(`${process.env.REACT_APP_API_URL}/table-data?${yearParams}&${divisionParams}&${offenceParams}`) //https://locahost:8000/table-data?${yearParams}&${divisionParams}&${offenceParams}
       .then(res => res.json())
-      .then(data => setTableData(data));
+      .then(data => {
+        setTableData(data);
+        setLoading(false);
+      })
+      .catch(() => setLoading(false));
   }
 }, [selectedYears, selectedDivisions, selectedOffences]);
 
@@ -83,6 +89,14 @@ const crimeData = Array.isArray(tableData)
   return (
     // Main app container with all components and overlays
     <div className="app-container">
+      {/* Loading overlay */}
+          {loading && (
+            <div className="loading-screen">
+              <div className="loading-spinner"></div>
+              <div className="loading-text">Loading Crime Data...</div>
+            </div>
+          )}
+
       {/* Disclaimer banner */}
       <div className="disclaimer">
         Disclaimer: This map is for research and educational purposes only. It is not an official government product. Data is sourced from public RBPF reports.
